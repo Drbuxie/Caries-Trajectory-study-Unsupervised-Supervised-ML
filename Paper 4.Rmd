@@ -1,0 +1,377 @@
+---
+title: "Dental Caries Trajectories"
+author: "Chukwuebuka Ogwo"
+date: "6/25/2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+* Description of data:  
+  - A cohort study (subjects were recruited at birth and followed for 25 years).
+  - A high dimensional data (more than 50 relevant variables)
+  - Dental examinations were performed at age 5, 9, 13, 17 and 23. 
+  - Independent variables data were collected at every 6 months. 
+  - Almost 2000 subjects were recruited at birth but only about 336 subjects were retained after 25 years (a lot of missing data).
+  
+* Description: A trajectory analysis of dental caries over a life course using a longitudinal data.
+* Aim: To use unsupervised machine learning algorithm (KmL) to understand the changes in caries incidence from childhood to adulthood. 
+* Ultimate goal: To help cities/health departments identify high risk groups and help them streamline their interventions which will save them time and money.  
+
+```{r packages}
+install.packages("recipes")
+#install.packages("haven")
+#install.packages("MachineShop")
+#install.packages("tidyverse")
+#install.packages("car")
+#install.packages("doParallel")
+#install.packages("gbm")
+#install.packages("nnet")
+#install.packages("MASS")
+#install.packages("glmnet")
+#install.packages("tidyr", dependencies = TRUE)
+#install.packages("xgboost")
+#install.packages("VGAM")
+install.packages("themis")
+#install.packages("kml")
+library(xgboost)
+library(recipes)
+library(themis)
+library(glmnet)
+library(readr)
+require(knitr)
+library(MachineShop)
+library(nnet)
+library(MachineShop)
+library("kml3d")
+library(kml)
+library(rgl)
+library(dplyr)
+library(haven)
+require(MASS)
+suppressPackageStartupMessages(library(doParallel))
+library(gbm)
+## Allocate cores for parallel processing
+registerDoParallel(cores = 6)
+```
+
+                  #### UNSUPERVISED ML - TRAJECTORY ANALYSIS ####
+                  
+```{r dataset}
+### 1. Importing new dataset
+setwd("/Users/tup35488/OneDrive/Documents/PhD/Datasets")
+CariesTraj <- read.csv("D2complete.csv")
+View(CariesTraj)
+head(CariesTraj)
+
+CariesTraj2<- CariesTraj[c(50:53)]
+CariesTraj2
+table(is.na(CariesTraj2))
+#table(CariesTraj$income_2007)
+#CariesTraj2<- CariesTraj[c(1,2,4:6)]#
+#CariesTraj0<- na.omit(CariesTraj)#
+#CariesTraj1<- CariesTraj0[c(1,2,4:6)]#
+```
+
+## Including Plots
+```{r Longitudinal data clustering }
+### 2. Main analysis### Longitudinal clustering for Trajectory analysis
+Ebtraj<-cld(traj=CariesTraj,
+    idAll=as.character(CariesTraj$id),
+    time=c(9,13,17,23),
+    timeInData=c(50:53), maxNA=2)
+ kml(Ebtraj,nbClusters = 3:6, nbRedrawing=20,toPlot="both")
+```
+
+
+```{r Partition selection}
+ ### 3. Get and choose best partions
+X11()
+choice(Ebtraj, typeGraph = "bmp") ### To see the best partition  
+plotAllCriterion(Ebtraj)          ### To check the best's cluster numbers##
+print(Ebtraj)
+mean.trajectories <- calculTrajMean(Ebtraj["traj"], Ebtraj['c3'][[1]]['clusters'])
+print(mean.trajectories)
+```
+
+    
+```{r Data export and merging}
+### 4. Export the clusters and create a new dataset that includes the clusters
+CariesTraj$cluster <- getClusters(Ebtraj,3)
+View (CariesTraj)
+write.csv(CariesTraj, 'Paper3_CariesTraj.csv')
+```
+
+
+
+## Reloading the trajectory data with predictor variables for supervised machine learning
+```{r}
+setwd("/Users/User/OneDrive/Documents/PhD/Datasets")
+#setwd("/Users/cho379/OneDrive/Documents/PhD/Datasets")
+P3_CariesTraj <- read.csv("Codes for paper 1, 2, 3/Paper3_CariesTraj.csv")
+
+###Remove rows that have NA value for the dependent variable
+P3_CariesTraj<-P3_CariesTraj[!is.na(P3_CariesTraj$cluster),]
+#P3_CariesTraj
+
+CariesTrajdf<-P3_CariesTraj[c(1,2,31:33,3:30,34:49,57)]
+CariesTrajdf
+table(CariesTrajdf$cluster)
+###Keep rows with at least 31 non missing values
+CariesTrajdf<-CariesTrajdf[rowSums(is.na(CariesTrajdf))<(length(CariesTrajdf)-31),]
+
+###Converting the sociodemographic variables from numeric to factors
+CariesTrajdf$total_mgF23<- (CariesTrajdf$total_mgF23)/10
+CariesTrajdf$total_mgF17<- (CariesTrajdf$total_mgF17)/10
+CariesTrajdf$total_mgF13<- (CariesTrajdf$total_mgF13)/10
+CariesTrajdf$total_mgF9<- (CariesTrajdf$total_mgF9)/10
+
+CariesTrajdf$homeppm23<- (CariesTrajdf$homeppm23)/10
+CariesTrajdf$homeppm17<- (CariesTrajdf$homeppm17)/10
+CariesTrajdf$homeppm13<- (CariesTrajdf$homeppm13)/10
+CariesTrajdf$homeppm9<- (CariesTrajdf$homeppm9)/10
+
+CariesTrajdf$brushingfreq23<- as.factor(CariesTrajdf$brushingfreq23)
+CariesTrajdf$brushingfreq17<- as.factor(CariesTrajdf$brushingfreq17)
+CariesTrajdf$brushingfreq13<- as.factor(CariesTrajdf$brushingfreq13)
+CariesTrajdf$brushingfreq9<- as.factor(CariesTrajdf$brushingfreq9)
+
+CariesTrajdf$id<- as.character(CariesTrajdf$id)
+CariesTrajdf$female1<- as.factor(CariesTrajdf$female1)
+CariesTrajdf$SES_3cat_2007<- as.factor(CariesTrajdf$SES_3cat_2007)
+CariesTrajdf$income_2007<- as.factor(CariesTrajdf$income_2007)
+CariesTrajdf$mom_edu_2007<- as.factor(CariesTrajdf$mom_edu_2007)
+#CariesTrajdf$cluster<- ifelse(CariesTrajdf$cluster=="A", 1,ifelse(CariesTrajdf$cluster=="B", 2,3))
+
+CariesTrajdf
+summary(CariesTrajdf)
+
+#write.csv(CariesTrajdf, "Caries_data_PSM.csv")
+```
+
+                                     #### SUPERVISED ML - PREDICTIVE MODELLING ####
+
+## Data Preprocessing using recipes package 
+```{r}
+set.seed(808)
+###Base
+trajrecipe1 <- recipe(cluster~ ., data = CariesTrajdf) %>%
+  step_rm(id)%>%
+  step_novel(all_predictors(), -all_numeric()) %>%
+  step_impute_knn(all_predictors())%>%
+  step_dummy(all_nominal(), -all_outcomes())%>%
+  step_mutate(cluster= factor(cluster, ordered = TRUE))%>%
+  step_nzv(all_predictors()) %>%
+  step_normalize(all_numeric()) %>%
+  #step_scale(all_numeric())%>%
+  step_smote(cluster)%>%
+  role_case(stratum = cluster)%>%
+  prep()
+ 
+ 
+baked_traj1<- bake(trajrecipe1, new_data = NULL)
+table(baked_traj1$cluster, useNA = "always")
+
+summary(baked_traj1)
+
+```
+
+## Cross validation (Resampling Control using 5 folds)
+```{r}
+cvc <- CVControl(folds = 5, repeats = 1, seed = 808)
+```
+
+         #### Model building - Compared 5 classification models with Multinomial (ordered) regression as the control model ####
+
+
+##Model 1 - Lasso
+```{r}
+
+##Model training
+model1 <- TunedModel(GLMNetModel)
+Trlasso_fit <- fit(cluster~ ., data =baked_traj1, model = model1)
+summary(Trlasso_fit)
+
+##Model testing using resampling technique under 5-fold crossvalidation
+Trlasso_res <- resample(cluster~ ., data =baked_traj1, model = model1, control = cvc)
+summary(Trlasso_res)
+```
+
+```{r}
+##Lasso parameters and plots
+L_tuned_model <- as.MLModel(Trlasso_fit)
+print(L_tuned_model, n = Inf)
+
+##Variable importance 
+VT<- varimp(Trlasso_fit)
+View(VT)
+plot(VT)
+
+##confusion matrix
+summary(confusion(Trlasso_res))
+
+##Calibration
+plot(calibration(Trlasso_res))
+
+```
+
+
+
+##Model 2 - Gradient Boosting Machine (GBM)
+```{r}
+
+##Model training
+model2 <- TunedModel(GBMModel)
+Trgbm_fit <- fit(cluster~ ., data =baked_traj1, model = model2)
+summary(Trgbm_fit)
+
+
+##Model testing using resampling technique under 5-fold crossvalidation
+Trgbm_res <- resample(cluster~ ., data =baked_traj1, model = model2, control = cvc)
+summary(Trgbm_res)
+
+
+```
+
+```{r}
+##gbm parameters and plot
+L_tuned_model <- as.MLModel(Trgbm_fit)
+print(L_tuned_model, n = Inf)
+
+##Variable importance 
+plot((varimp(Trgbm_fit)))
+
+##confusion matrix
+summary(confusion(Trgbm_res))
+
+##Calibration
+plot(calibration(Trgbm_res))
+```
+
+
+
+##Model 3 - Extereme gradient boosting machine (XGBoost)
+```{r}
+
+##Model training
+model3 <- TunedModel(XGBTreeModel)
+TrXGT_fit <- fit(cluster~ ., data =baked_traj1, model = model3)
+summary(TrXGT_fit)
+
+##Model testing using resampling technique under 5-fold crossvalidation
+TrXGT_res <- resample(cluster~ ., data =baked_traj1, model = model3, control = cvc)
+summary(TrXGT_res)
+
+```
+
+```{r}
+##Xgboost parameters and plot
+XG_tuned_model <- as.MLModel(TrXGT_fit)
+print(XG_tuned_model, n = Inf)
+
+##Variable importance 
+Vxgb<- varimp(TrXGT_fit)
+View(Vxgb)
+plot(Vxgb)
+
+##confusion matrix
+summary(confusion(TrXGT_res))
+
+##Calibration
+plot(calibration(TrXGT_res))
+
+##Partial dependence()
+XGT_Pdep = dependence(TrXGT_fit)
+plot(XG_tuned_model, type = "line")
+```
+
+
+
+##Model 4 - Neural Net (Single layer)
+```{r}
+##Model training
+model4 <- TunedModel(NNetModel)
+Trneural_fit <- fit(cluster~ ., data = baked_traj1, model = model4)
+summary(Trneural_fit)
+
+##Model testing using resampling technique under 5-fold crossvalidation
+Trneural_res <- resample(cluster~ ., data = baked_traj1, model = model4, control = cvc)
+summary(Trneural_res)
+
+
+```
+
+```{r}
+##Neural Net parameters and plot
+neural_tuned_model <- as.MLModel(Trneural_fit)
+print(neural_tuned_model, n = Inf)
+
+neural_Pdep = dependence(Trneural_fit)
+plot(neural_tuned_model, type = "line")
+
+##Variable importance 
+Vneural<- varimp(Trneural_fit)
+View(Vneural)
+plot(Vneural)
+
+##confusion matrix
+summary(confusion(Trneural_res))
+
+##Calibration
+plot(calibration(Trneural_res))
+```
+
+
+
+
+##Model 5 - Multinomial regression model (Probit)
+```{r}
+#Data preprocessing for probit model
+
+baked_traj2 <- recipe(cluster~ ., data = baked_traj1) %>%
+  step_corr(all_numeric_predictors(), threshold = 0.9)%>%
+  prep()
+baked_traj2<- bake(baked_traj2, new_data = NULL)
+
+
+##Model training 
+model5 <- TunedModel(POLRModel)
+Trpols_fit <- fit(cluster~ ., data = baked_traj2, model = model5)
+summary(Trpols_fit)
+
+##Model testing using resampling technique under 5-fold crossvalidation
+Trpols_res <- resample(cluster~ ., data = baked_traj2, model = model5, control = cvc)
+summary(Trpols_res)
+
+```
+
+```{r}
+##Probit parameters and plot
+Pols_tuned_model <- as.MLModel(Trpols_fit)
+print(Pols_tuned_model, n = Inf)
+
+##Variable importance 
+Vpols<- varimp(Trpols_fit)
+View(Vpols)
+plot(Vpols)
+
+##confusion matrix
+summary(confusion(Trpols_res))
+
+##Calibration
+plot(calibration(Trpols_res))
+```
+
+
+
+
+```{r}
+## Compare resample results
+res <- c(GBM = Trgbm_res, LASSO = Trlasso_res, XGBT = TrXGT_res, NNET = Trneural_res, Pols = Trpols_res)
+summary(res)
+plot(res)
+summary(confusion(res))
+```
+
