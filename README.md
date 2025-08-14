@@ -5,7 +5,8 @@
   - Independent variables data were collected at every 6 months. 
   - Almost 2000 subjects were recruited at birth but only about 336 subjects were retained after 25 years (a lot of missing data).
   
-ABSTRACT 
+* ABSTRACT 
+
 Introduction and Aims: Dental caries is a chronic, multifactorial disease influenced by biological, behavioral, and environmental factors across the life course. While traditional trajectory analyses have been used to classify caries progression, no prior studies have applied machine learning to predict caries trajectories from childhood to early adulthood. This study uses unsupervised machine learning to identify distinct trajectory groups and applies supervised to predict risk-group membership based on behavioral, dietary, fluoride, and sociodemographic variables.
 
 Methods: This study utilized data from the Iowa Fluoride Study. Caries trajectories were identified using K-means for Longitudinal Data (KmL) based on dental examinations at ages 9, 13, 17, and 23. The optimal number of groups was selected using the Calinski–Harabasz criterion and clinical relevance. Trajectory group membership served as the outcome in supervised models trained on sociodemographic, fluoride intake, dietary, and behavioral variables. Ordered Multinomial Logistic Regression, Least Absolute Shrinkage and Selection Operation, Gradient Boosting Machine, Extreme Gradient Boosting and Neural Network were applied. Class imbalance was addressed with Synthetic Minority Over-sampling Technique.
