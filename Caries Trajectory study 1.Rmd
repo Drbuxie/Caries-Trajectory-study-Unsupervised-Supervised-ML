@@ -375,3 +375,243 @@ plot(res)
 summary(confusion(res))
 ```
 
+
+###### PERFORMING SHAP ANALYSIS USING XGBOOST FITTED MODEL ########
+
+
+```{r}
+# Install if needed:
+# install.packages(c("MachineShop", "fastshap", "ggplot2"))
+
+suppressPackageStartupMessages({
+  library(MachineShop)
+  library(fastshap)
+  library(ggplot2)
+})
+
+## ---------- Utilities ----------
+
+# Ensure X is a plain dense data.frame with only atomic columns
+coerce_dense_df <- function(X) {
+  if (inherits(X, "Matrix")) X <- as.matrix(X)
+  X <- as.data.frame(X, stringsAsFactors = FALSE)
+
+  # Expand any matrix-columns
+  is_matcol <- vapply(X, is.matrix, logical(1))
+  if (any(is_matcol)) {
+    for (j in rev(which(is_matcol))) {
+      m <- X[[j]]
+      cn <- colnames(m)
+      if (is.null(cn)) cn <- paste0(names(X)[j], "_", seq_len(ncol(m)))
+      X[[j]] <- NULL
+      for (k in seq_len(ncol(m))) X[[cn[k]]] <- m[, k]
+    }
+  }
+  # Disallow list-like columns
+  bad <- vapply(X, is.list, logical(1)) | vapply(X, inherits, logical(1), what = "POSIXlt")
+  if (any(bad)) {
+    stop("X contains list-like columns: ", paste(names(X)[bad], collapse = ", "),
+         ". Convert to atomic vectors first.")
+  }
+  X
+}
+
+# Prediction wrapper factory: returns probability for one class label
+make_pred_fun_multiclass <- function(class_label) {
+  force(class_label)
+  function(object, newdata) {
+    newdata <- coerce_dense_df(newdata)
+    p <- predict(object, newdata = newdata, type = "prob")
+    p <- as.data.frame(p, stringsAsFactors = FALSE)
+    if (!class_label %in% colnames(p)) {
+      stop("Class '", class_label, "' not found in probability output. Found: ",
+           paste(colnames(p), collapse = ", "))
+    }
+    as.numeric(p[[class_label]])
+  }
+}
+
+# Save any ggplot or printable object as PNG (300dpi) and PDF
+strict_save <- function(p, prefix, width = 8, height = 5.5, dpi = 300) {
+  if (inherits(p, "ggplot")) {
+    ggsave(paste0(prefix, ".png"), plot = p, width = width, height = height, dpi = dpi)
+    ggsave(paste0(prefix, ".pdf"), plot = p, width = width, height = height)
+  } else {
+    grDevices::png(paste0(prefix, ".png"), width = width, height = height, units = "in", res = dpi)
+    print(p); grDevices::dev.off()
+    grDevices::pdf(paste0(prefix, ".pdf"), width = width, height = height)
+    print(p); grDevices::dev.off()
+  }
+}
+
+## ---------- Core: compute SHAP for one class and plot with ggplot2 ----------
+
+make_shap_plots_for_class <- function(fit, X, class_label,
+                                      nsim = 100,
+                                      outdir = "shap_outputs",
+                                      top_k_beeswarm = 20,
+                                      row_index_for_local = 1,
+                                      seed = 123) {
+  if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+  set.seed(seed)
+
+  X <- coerce_dense_df(X)
+
+  # 1) SHAP for this class (probability scale)
+  pred_fun <- make_pred_fun_multiclass(class_label)
+  shap_mat <- fastshap::explain(
+    object       = fit,
+    X            = X,
+    pred_wrapper = pred_fun,
+    nsim         = nsim
+  )
+  # Ensure matrix for indexing
+  if (is.data.frame(shap_mat)) shap_mat <- as.matrix(shap_mat)
+
+  # 2) Global importance (mean |SHAP|)
+  imp <- colMeans(abs(shap_mat), na.rm = TRUE)
+  imp_df <- data.frame(feature = names(imp), mean_abs_shap = as.numeric(imp))
+  imp_df <- imp_df[order(-imp_df$mean_abs_shap), ]
+
+  # 3) Choose top feature for dependence
+  top_feature <- imp_df$feature[1]
+
+  # 4) Build plots with ggplot2 only
+
+  prefix <- file.path(outdir, paste0("class_", class_label, "_"))
+
+  # (a) BAR: global importance with color + legend
+p_bar <- ggplot(imp_df[1:min(nrow(imp_df), 30), ],
+                aes(x = reorder(feature, mean_abs_shap),
+                    y = mean_abs_shap,
+                    fill = mean_abs_shap)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = "Mean |SHAP| (probability scale)",
+    title = paste("Global importance — class", class_label),
+    fill = "Mean |SHAP|"
+  ) +
+  # Viridis continuous (built into ggplot2 via viridisLite)
+  scale_fill_viridis_c(option = "C") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+strict_save(p_bar, paste0(prefix, "bar"))
+
+# (b) BEESWARM: color by SHAP (signed) + legend
+top_feats <- imp_df$feature[1:min(top_k_beeswarm, nrow(imp_df))]
+make_long <- function(feats) {
+  rows <- lapply(feats, function(f) {
+    data.frame(feature = f,
+               shap    = shap_mat[, f],
+               stringsAsFactors = FALSE)
+  })
+  do.call(rbind, rows)
+}
+long_df <- make_long(top_feats)
+long_df$feature <- factor(long_df$feature, levels = rev(top_feats))
+
+p_swarm <- ggplot(long_df,
+                  aes(x = shap, y = feature, color = shap)) +
+  geom_point(alpha = 0.55, size = 1.4,
+             position = position_jitter(height = 0.18)) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = "SHAP value (probability scale)",
+    y = NULL,
+    title = paste("Beeswarm (top", length(top_feats), "features) — class", class_label),
+    color = "SHAP (signed)"
+  ) +
+  # Diverging palette centered at 0 for negative/positive SHAP
+  scale_color_gradient2(low = "#2c7bb6", mid = "#ffffbf", high = "#d7191c", midpoint = 0) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right")
+strict_save(p_swarm, paste0(prefix, "beeswarm"))
+
+# (c) DEPENDENCE: color by feature value + legend
+dep_df <- data.frame(
+  x     = X[[top_feature]],
+  shap  = shap_mat[, top_feature]
+)
+
+if (is.numeric(dep_df$x)) {
+  p_dep <- ggplot(dep_df, aes(x = x, y = shap, color = x)) +
+    geom_point(alpha = 0.6, size = 1.6) +
+    geom_smooth(method = "loess", se = FALSE, color = "black") +
+    labs(
+      x = top_feature,
+      y = paste0("SHAP (class ", class_label, ")"),
+      title = paste0("Dependence: ", top_feature, " — class ", class_label),
+      color = paste0(top_feature, " value")
+    ) +
+    scale_color_viridis_c(option = "D") +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "right")
+} else {
+  # Categorical feature: boxplot with fill legend
+  p_dep <- ggplot(dep_df, aes(x = x, y = shap, fill = x)) +
+    geom_boxplot(outlier.alpha = 0.25) +
+    labs(
+      x = top_feature,
+      y = paste0("SHAP (class ", class_label, ")"),
+      title = paste0("Dependence: ", top_feature, " — class ", class_label),
+      fill = top_feature
+    ) +
+    scale_fill_viridis_d(option = "D") +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "right")
+}
+strict_save(p_dep, paste0(prefix, "dependence_", top_feature))
+
+
+  # 5) (Optional) Save SHAP matrix to CSV for this class
+  write.csv(as.data.frame(shap_mat),
+            file = file.path(outdir, paste0("shap_values_class_", class_label, ".csv")),
+            row.names = FALSE)
+
+  invisible(list(shap = shap_mat, importance = imp_df, top_feature = top_feature))
+}
+
+## ---------- Driver: run for all classes ----------
+
+# Fitted MachineShop model
+fit_obj <- TrXGT_fit
+
+# Predictors only (drop outcome 'cluster')
+ X <- baked_traj1[, setdiff(names(baked_traj1), "cluster"), drop = FALSE]
+X <- coerce_dense_df(X)
+
+# Detect class labels
+prob1 <- predict(fit_obj, newdata = X[1, , drop = FALSE], type = "prob")
+classes <- colnames(as.data.frame(prob1, stringsAsFactors = FALSE))
+
+results <- lapply(classes, function(cl) {
+  message("Processing class: ", cl)
+  make_shap_plots_for_class(
+    fit  = fit_obj,
+    X    = X,
+    class_label = cl,
+    nsim = 200,                 # ↑ for more stability (e.g., 200–500)
+    outdir = "shap_outputs",
+    top_k_beeswarm = 20,
+    row_index_for_local = 1
+  )
+})
+names(results) <- classes
+
+# Optional: write a cross-class global importance weighted by mean predicted class prob
+mean_probs <- colMeans(as.data.frame(predict(fit_obj, newdata = X, type = "prob")))
+weighted_imp <- Reduce(function(acc, cl) {
+  imp <- results[[cl]]$importance
+  w <- mean_probs[[cl]]
+  acc <- merge(acc, imp, by = "feature", all = TRUE, suffixes = c("", paste0("_", cl)))
+  acc[[paste0("w_", cl)]] <- imp$mean_abs_shap * w
+  acc
+}, classes, init = data.frame(feature = colnames(X)))
+weighted_imp$weighted_mean_abs_shap <- rowSums(weighted_imp[ , grepl("^w_", names(weighted_imp)) ], na.rm = TRUE)
+weighted_imp <- weighted_imp[order(-weighted_imp$weighted_mean_abs_shap), c("feature", "weighted_mean_abs_shap")]
+write.csv(weighted_imp, file = file.path("shap_outputs", "global_importance_weighted_across_classes.csv"), row.names = FALSE)
+
+```
+
